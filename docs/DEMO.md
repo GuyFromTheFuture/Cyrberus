@@ -29,6 +29,35 @@ Confirm the venv can see it:
 
 ---
 
+## 1b. Runtime directories
+
+The daemon publishes its state to `/run/cyrberus`. Under systemd the service
+unit creates that directory automatically. Started by hand it does not exist,
+and `/run` is root-owned, so the daemon falls back to your per-user runtime
+directory and prints which path it chose:
+
+```
+INFO  state file: /run/user/1000/cyrberus/state.json
+```
+
+The UI resolves the same way and prints what it is watching. If the two ever
+disagree, set `CYRBERUS_STATE` on both:
+
+```bash
+CYRBERUS_STATE=/tmp/cyrberus-state.json python3 head/daemon.py --simulate
+CYRBERUS_STATE=/tmp/cyrberus-state.json python3 ui/kiosk.py --windowed
+```
+
+To have the system directories exist from boot regardless of how the daemon is
+started:
+
+```bash
+sudo cp deploy/tmpfiles.d-cyrberus.conf /etc/tmpfiles.d/cyrberus.conf
+sudo systemd-tmpfiles --create
+```
+
+---
+
 ## 2. Simulation — no hardware, no scanning
 
 Two terminals, or one over SSH and the UI on the attached screen.
@@ -137,7 +166,8 @@ X sessions started directly from systemd are unreliable on a Pi; autologin plus
 
 | Symptom | Cause |
 |---|---|
-| UI shows "Checking is unavailable" | Daemon isn't running, or hasn't published in 15 s |
+| UI shows "Checking is unavailable" | Daemon isn't running, hasn't published in 15 s, or the two are using different state paths - compare the paths each prints at startup |
+| `PermissionError: '/run/cyrberus'` | Old build. Pull the latest; the path now falls back automatically |
 | `ModuleNotFoundError: tkinter` | `python3-tk` not installed |
 | Daemon logs "clamdscan not found" | ClamAV not installed, or at a different path — set `scanner.CLAMDSCAN` |
 | Drive mounts on its own | An automounter came back; check `udisks2` isn't installed |

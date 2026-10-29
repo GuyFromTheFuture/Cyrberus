@@ -21,6 +21,7 @@ import state as st  # noqa: E402
 
 WORK = tempfile.mkdtemp(prefix="uitest-")
 st.STATE_PATH = os.path.join(WORK, "state.json")
+st.READ_PATH = st.STATE_PATH
 
 from kiosk import Kiosk  # noqa: E402
 import tkinter as tk     # noqa: E402

@@ -13,7 +13,36 @@ import os
 import tempfile
 import time
 
-STATE_PATH = "/run/cyrberus/state.json"
+SYSTEM_STATE_DIR = "/run/cyrberus"
+
+
+def resolve_state_path(writable):
+    """Where the state file lives, for this process.
+
+    Under systemd the unit's RuntimeDirectory= creates /run/cyrberus and both
+    the daemon and the kiosk account can reach it. Run by hand for a demo,
+    that directory does not exist and an ordinary user cannot create it, so
+    fall back to the per-user runtime directory. CYRBERUS_STATE overrides
+    everything - set it on both processes if you move the file.
+    """
+    override = os.environ.get("CYRBERUS_STATE")
+    if override:
+        return override
+
+    probe = os.W_OK if writable else os.R_OK
+    if os.path.isdir(SYSTEM_STATE_DIR) and os.access(SYSTEM_STATE_DIR, probe):
+        return os.path.join(SYSTEM_STATE_DIR, "state.json")
+
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime and os.path.isdir(runtime):
+        return os.path.join(runtime, "cyrberus", "state.json")
+
+    return os.path.join(tempfile.gettempdir(), "cyrberus-state.json")
+
+
+# Resolved per process: the daemon writes, the UI reads.
+STATE_PATH = resolve_state_path(writable=True)
+READ_PATH = resolve_state_path(writable=False)
 
 # States the UI knows how to draw. The daemon's internal phases collapse
 # into these for display.
@@ -56,7 +85,7 @@ def publish(state, path=None, **detail):
 
 def read(path=None):
     """Read current state. Never raises - the UI must keep drawing."""
-    path = path or STATE_PATH
+    path = path or READ_PATH
     try:
         with open(path, "r") as f:
             payload = json.load(f)

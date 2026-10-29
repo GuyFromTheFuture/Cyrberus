@@ -332,10 +332,11 @@ def main():
     ap = argparse.ArgumentParser(description="Cyrberus Head operator screen")
     ap.add_argument("--windowed", action="store_true",
                     help="run in a window instead of fullscreen")
-    ap.add_argument("--state", default=state.STATE_PATH,
+    ap.add_argument("--state", default=state.READ_PATH,
                     help="path to the daemon's state file")
     args = ap.parse_args()
 
+    print("kiosk watching: %s" % args.state)
     root = tk.Tk()
     Kiosk(root, args.state, windowed=args.windowed)
     root.mainloop()

@@ -33,7 +33,19 @@ PRIV_KEY = os.path.join(KEY_DIR, "head_private.pem")
 PUB_KEY = os.path.join(KEY_DIR, "head_public.pem")
 MOUNTPOINT = os.environ.get("CYRBERUS_MOUNT", "/mnt/cyrberus-scan")
 VALIDITY_HOURS = int(os.environ.get("CYRBERUS_VALIDITY_HOURS", "12"))
-LOG_PATH = os.environ.get("CYRBERUS_LOG", "/var/log/cyrberus/head.log")
+def _default_log_path():
+    """Prefer the system log directory; fall back when run by hand."""
+    system = "/var/log/cyrberus"
+    if os.path.isdir(system) and os.access(system, os.W_OK):
+        return os.path.join(system, "head.log")
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if runtime and os.path.isdir(runtime):
+        return os.path.join(runtime, "cyrberus", "head.log")
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "cyrberus-head.log")
+
+
+LOG_PATH = os.environ.get("CYRBERUS_LOG") or _default_log_path()
 
 log = logging.getLogger("cyrberus.head")
 
@@ -243,6 +255,7 @@ class Head:
     def run(self):
         log.info("Cyrberus Head starting (head_id=%s, validity=%dh)",
                  HEAD_ID, VALIDITY_HOURS)
+        log.info("state file: %s", state.STATE_PATH)
         try:
             mounts.unmount(MOUNTPOINT)      # clear anything left by a crash
         except mounts.MountError:
@@ -273,6 +286,8 @@ class Head:
     def run_simulation(self):
         """Walk every screen with no hardware. For UI work and demos."""
         log.info("simulation mode - no hardware will be touched")
+        log.info("state file: %s", state.STATE_PATH)
+        log.info("point the UI at it with:  python3 ui/kiosk.py --windowed")
         demo = [
             (state.READY, 3, {}),
             (state.WORKING, 2, {"phase": "identifying", "model": "SanDisk Ultra", "size": "32 GB"}),
