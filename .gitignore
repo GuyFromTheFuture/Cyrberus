@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------
+# SECRETS — never commit. The Head's private key is the root of
+# trust for the entire system; anyone holding it can forge a
+# manifest and approve malicious media.
+# ---------------------------------------------------------------
+keys/
+*.pem
+*.key
+*.sig
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+*.egg-info/
+.pytest_cache/
+
+# Scan artifacts and test media
+*.log
+/var/log/cyrberus/
+test-media/
+*.img
+*.iso
+
+# Malware samples — keep OUT of version control.
+# GitHub scans for and may remove them, and distributing samples
+# is a liability. Keep them offline in the lab.
+samples/
+*.eicar
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+
+# Editors
+.vscode/
+.idea/
