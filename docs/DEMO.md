@@ -84,10 +84,35 @@ on the screens themselves.
 
 ### Prerequisites
 
+Run the preflight rather than checking by hand:
+
+```bash
+bash deploy/preflight.sh            # report only
+sudo bash deploy/preflight.sh --fix # create and chown what is missing
+```
+
+It verifies the service account, key permissions, the three directories, the
+sudoers rule, ClamAV and its fail-closed setting, that no automounter is
+running, and the Python dependencies. Re-run without `--fix` until it says
+READY.
+
+The daemon must run as the `cyrberus` account, not your login — the sudoers
+rule granting mount privileges names that account specifically:
+
+```bash
+sudo -u cyrberus /opt/cyrberus/venv/bin/python3 /opt/cyrberus/head/daemon.py -v
+```
+
+<details>
+<summary>What preflight checks, manually</summary>
+
+
 - ClamAV running: `systemctl is-active clamav-daemon`
 - Keys present: `ls -l /opt/cyrberus/keys/`
 - Sudoers rule installed (`deploy/sudoers.d/cyrberus`)
 - Mountpoint exists: `sudo mkdir -p /mnt/cyrberus-scan && sudo chown cyrberus:cyrberus /mnt/cyrberus-scan`
+
+</details>
 
 ### Run it
 
@@ -110,6 +135,60 @@ sudo mount -o ro /dev/sda1 /mnt/test
 python3 sentinel/verify_manifest.py /mnt/test /opt/cyrberus/keys/head_public.pem
 # PASS: valid until ... (N files)
 ```
+
+---
+
+## 3b. Preparing test media
+
+**No formatting required.** Most USB sticks are already FAT32 or exFAT with a
+single partition, which is exactly what the Head admits. Use drives you have.
+
+### The clean drive
+
+Any single-partition FAT32/exFAT stick with a handful of ordinary files on it.
+Check what you have:
+
+```bash
+lsblk -o NAME,FSTYPE,SIZE,LABEL,MOUNTPOINT
+```
+
+One partition line under the disk, `vfat` or `exfat`, is what you want. Two
+partition lines means that drive is your "cannot check" demo instead.
+
+### The infected drive
+
+Use EICAR, the industry-standard test string every scanner detects. It is not
+malware and does nothing. Never use real malware for a demo.
+
+Create it **on the Pi** — downloading it on Windows just makes Defender
+quarantine it before you can copy it anywhere.
+
+With the daemon stopped:
+
+```bash
+sudo mkdir -p /mnt/prep
+sudo mount /dev/sda1 /mnt/prep
+printf '%s' 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' \
+  | sudo tee /mnt/prep/invoice.txt > /dev/null
+sync && sudo umount /mnt/prep
+```
+
+Confirm it is the real thing — the file must be exactly 68 bytes:
+
+```bash
+sudo mount /dev/sda1 /mnt/prep
+wc -c /mnt/prep/invoice.txt          # 68
+clamdscan /mnt/prep/invoice.txt      # ... FOUND
+sudo umount /mnt/prep
+```
+
+Check `/dev/sda1` is really your stick with `lsblk` first. It is almost
+certainly `sda1`, since the Pi boots from `mmcblk0`.
+
+### The tampered drive
+
+Validate a clean drive, then add a file to it afterwards and let the verifier
+reject it. Covered in the demo table below.
 
 ---
 
