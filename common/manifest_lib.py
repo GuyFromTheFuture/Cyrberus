@@ -30,13 +30,38 @@ def sha256_file(path, chunk=1024 * 1024):
     return h.hexdigest()
 
 
-def walk_payload(root):
+def enumerate_files(root):
+    """Paths of every regular file under root, excluding the manifest dir.
+
+    Cheap compared to hashing, so the daemon calls this first to learn the
+    total for the progress bar.
+    """
+    out = []
+    root = os.path.abspath(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel_dir = os.path.relpath(dirpath, root)
+        if rel_dir == MANIFEST_DIR or rel_dir.startswith(MANIFEST_DIR + os.sep):
+            dirnames[:] = []
+            continue
+        if rel_dir == ".":
+            dirnames[:] = [d for d in dirnames if d != MANIFEST_DIR]
+        for name in filenames:
+            out.append(os.path.join(dirpath, name))
+    return out
+
+
+def walk_payload(root, on_progress=None):
     """Every regular file under root, excluding the manifest directory.
 
     Returns (entries, problems). A non-empty problems list means the device
     must be rejected: the manifest can only describe regular files.
+
+    on_progress(done, total) is called as hashing proceeds, so the operator
+    screen can show real progress rather than a spinner.
     """
     entries, problems = [], []
+    total = len(enumerate_files(root)) if on_progress else 0
+    done = 0
     root = os.path.abspath(root)
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = os.path.relpath(dirpath, root)
@@ -62,6 +87,9 @@ def walk_payload(root):
                 })
             except OSError as e:
                 problems.append(("unreadable: %s" % e.strerror, rel))
+            if on_progress:
+                done += 1
+                on_progress(done, total)
     entries.sort(key=lambda e: e["path"])
     return entries, problems
 

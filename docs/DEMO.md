@@ -1,0 +1,147 @@
+# Running the Head demo
+
+Two ways to run it. Simulation needs nothing but a screen — use it to show the
+operator experience or to work on the UI. Live mode does the real thing.
+
+---
+
+## 1. Install the graphical layer (once)
+
+Raspberry Pi OS Lite has no GUI. This adds a bare X server and one window
+manager — about 45 MB, against roughly 900 MB for a full desktop, and
+critically no file manager, so nothing starts automounting drives again.
+
+```bash
+sudo apt install --no-install-recommends -y \
+    xserver-xorg xinit x11-xserver-utils \
+    matchbox-window-manager python3-tk unclutter fonts-dejavu-core
+```
+
+`python3-tk` is the one people miss — Tkinter ships with Python on most
+distributions but Debian splits it into its own package, so the UI fails at
+the import line without it.
+
+Confirm the venv can see it:
+
+```bash
+/opt/cyrberus/venv/bin/python3 -c "import tkinter; print('tk', tkinter.TkVersion)"
+```
+
+---
+
+## 2. Simulation — no hardware, no scanning
+
+Two terminals, or one over SSH and the UI on the attached screen.
+
+```bash
+# terminal 1: cycle through every screen
+python3 head/daemon.py --simulate
+
+# terminal 2 (or on the Pi's display)
+python3 ui/kiosk.py --windowed
+```
+
+The daemon walks ready → scanning → hashing with a live progress bar → clean →
+threat → blocked, and loops. Nothing is mounted and no drive is touched.
+
+`--windowed` gives an 800×480 window; drop it for fullscreen. `Escape` quits.
+
+This is the mode to use when showing the interface to someone, or when working
+on the screens themselves.
+
+---
+
+## 3. Live — the real pipeline
+
+### Prerequisites
+
+- ClamAV running: `systemctl is-active clamav-daemon`
+- Keys present: `ls -l /opt/cyrberus/keys/`
+- Sudoers rule installed (`deploy/sudoers.d/cyrberus`)
+- Mountpoint exists: `sudo mkdir -p /mnt/cyrberus-scan && sudo chown cyrberus:cyrberus /mnt/cyrberus-scan`
+
+### Run it
+
+```bash
+# terminal 1
+sudo -u cyrberus /opt/cyrberus/venv/bin/python3 /opt/cyrberus/head/daemon.py -v
+
+# terminal 2
+python3 ui/kiosk.py --windowed
+```
+
+Insert a single-partition FAT32 drive. You should see it identified, scanned,
+hashed with real progress, and approved, and `.cyrberus/manifest.json` should
+appear on the drive.
+
+### Check the result
+
+```bash
+sudo mount -o ro /dev/sda1 /mnt/test
+python3 sentinel/verify_manifest.py /mnt/test /opt/cyrberus/keys/head_public.pem
+# PASS: valid until ... (N files)
+```
+
+---
+
+## 4. A demo script that lands
+
+Four drives, in this order. The last two are what make the point.
+
+| # | Drive | Expected | What it shows |
+|---|---|---|---|
+| 1 | Ordinary FAT32 stick with a few documents | **Clean** | The happy path, with a real progress bar |
+| 2 | Same drive, now with a file added by hand afterwards | Sentinel **denies** | Validation binds to contents, not to the drive |
+| 3 | Drive with the EICAR test file | **Threat** + reference code | Detection, and no manifest is written |
+| 4 | The two-partition drive from the verification checklist | **Cannot check** | A hidden second partition can't slip past |
+
+For #2, show the denial with the verifier rather than a Sentinel — the endpoint
+agent isn't built yet, and `verify_manifest.py` is the same logic it will use.
+
+For #3, get the EICAR file with:
+
+```bash
+curl -s https://secure.eicar.org/eicar.com.txt -o /path/to/drive/eicar.txt
+```
+
+It's a harmless industry-standard test string that every scanner flags. Don't
+use real malware for a demo.
+
+---
+
+## 5. Autostart (for a hands-off demo)
+
+```bash
+sudo cp deploy/cyrberus-scanner.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cyrberus-scanner
+systemctl status cyrberus-scanner
+```
+
+For the UI, enable console autologin for the `kiosk` account and install
+`deploy/cyrberus-kiosk.xinitrc` as `~kiosk/.xinitrc`, with this appended to
+`~kiosk/.bash_profile`:
+
+```sh
+if [ -z "$DISPLAY" ] && [ "$(tty)" = "/dev/tty1" ]; then
+  exec startx -- -nocursor
+fi
+```
+
+X sessions started directly from systemd are unreliable on a Pi; autologin plus
+`.xinitrc` is the arrangement that works.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| UI shows "Checking is unavailable" | Daemon isn't running, or hasn't published in 15 s |
+| `ModuleNotFoundError: tkinter` | `python3-tk` not installed |
+| Daemon logs "clamdscan not found" | ClamAV not installed, or at a different path — set `scanner.CLAMDSCAN` |
+| Drive mounts on its own | An automounter came back; check `udisks2` isn't installed |
+| "mount: only root can do that" | Sudoers rule missing or the daemon isn't running as `cyrberus` |
+| Nothing happens on insert | Daemon only watches `ID_BUS=usb` disks; check `udevadm monitor` |
+
+Logs: `/var/log/cyrberus/head.log`, or `journalctl -u cyrberus-scanner -f`.

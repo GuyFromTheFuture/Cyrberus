@@ -1,0 +1,29 @@
+[Unit]
+Description=Cyrberus Head scanner daemon
+Documentation=https://github.com/GuyFromTheFuture/Cyrberus
+After=clamav-daemon.service
+Requires=clamav-daemon.service
+
+[Service]
+Type=simple
+User=cyrberus
+Group=cyrberus
+WorkingDirectory=/opt/cyrberus
+ExecStart=/opt/cyrberus/venv/bin/python3 /opt/cyrberus/head/daemon.py
+Restart=on-failure
+RestartSec=5
+
+# /run/cyrberus holds the state file the kiosk UI reads. 0750 with the
+# kiosk account in the cyrberus group keeps it readable but not writable.
+RuntimeDirectory=cyrberus
+RuntimeDirectoryMode=0750
+
+# The daemon calls `sudo mount`, so privileges cannot be dropped entirely.
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/mnt/cyrberus-scan /var/log/cyrberus /run/cyrberus
+
+[Install]
+WantedBy=multi-user.target
