@@ -51,19 +51,37 @@ fi
 # ------------------------------------------------------------------- keys
 echo
 echo "Signing keys"
-if [ -f "$KEY_DIR/head_private.pem" ]; then
-    mode=$(stat -c '%a' "$KEY_DIR/head_private.pem")
-    owner=$(stat -c '%U' "$KEY_DIR/head_private.pem")
+# The key directory is mode 700 owned by the service account, so an ordinary
+# login cannot stat anything inside it. Probe as root when we can, and say
+# "cannot check" rather than "missing" when we cannot.
+if [ "$(id -u)" = 0 ]; then
+    key_probe() { test -f "$1"; }
+    key_stat()  { stat -c "$2" "$1" 2>/dev/null; }
+    can_probe=1
+elif sudo -n true 2>/dev/null; then
+    key_probe() { sudo -n test -f "$1"; }
+    key_stat()  { sudo -n stat -c "$2" "$1" 2>/dev/null; }
+    can_probe=1
+else
+    can_probe=0
+fi
+
+if [ "$can_probe" = 0 ]; then
+    note "[--]   cannot read $KEY_DIR as $(id -un) - it is mode 700 owned by $SVC_USER."
+    note "       Re-run with sudo to check the keys."
+elif key_probe "$KEY_DIR/head_private.pem"; then
+    mode=$(key_stat "$KEY_DIR/head_private.pem" '%a')
+    owner=$(key_stat "$KEY_DIR/head_private.pem" '%U')
     [ "$mode" = "600" ] && ok "private key is mode 600" \
                         || bad "private key is mode $mode, expected 600"
     [ "$owner" = "$SVC_USER" ] && ok "private key owned by $SVC_USER" \
                                || bad "private key owned by $owner, expected $SVC_USER"
+    key_probe "$KEY_DIR/head_public.pem" && ok "public key present" \
+                                         || bad "no public key at $KEY_DIR/head_public.pem"
 else
     bad "no private key at $KEY_DIR/head_private.pem"
     note "sudo -u $SVC_USER $VENV_PY $APP_DIR/head/keygen.py"
 fi
-[ -f "$KEY_DIR/head_public.pem" ] && ok "public key present" \
-                                  || bad "no public key at $KEY_DIR/head_public.pem"
 
 # ------------------------------------------------------------ directories
 echo
@@ -125,11 +143,18 @@ else
 fi
 if command -v clamdscan >/dev/null 2>&1; then
     ok "clamdscan found at $(command -v clamdscan)"
-    if clamconf 2>/dev/null | grep -qi 'AlertExceedsMax.*yes'; then
+    # Capture first: clamconf can exit non-zero over unrelated config, and
+    # with `set -o pipefail` that would sink the whole pipeline.
+    clam_cfg=$(clamconf 2>/dev/null || true)
+    if [ -z "$clam_cfg" ]; then
+        clam_cfg=$(grep -h . /etc/clamav/clamd.conf 2>/dev/null || true)
+    fi
+    if printf '%s\n' "$clam_cfg" | grep -qiE '^[[:space:]]*AlertExceedsMax[[:space:]="]*yes'; then
         ok "AlertExceedsMax is on (oversized files are flagged, not skipped)"
     else
         bad "AlertExceedsMax is NOT enabled - large files would pass unchecked"
-        note "see deploy/clamd.conf.d/cyrberus.conf"
+        note "check with:  sudo clamconf | grep AlertExceedsMax"
+        note "settings are in deploy/clamd.conf.d/cyrberus.conf"
     fi
 else
     bad "clamdscan not installed"
@@ -165,6 +190,26 @@ else
     bad "tkinter missing - the kiosk UI will not start"
     note "sudo apt install -y python3-tk"
 fi
+
+# ----------------------------------------------------------- attached media
+echo
+echo "Attached removable media"
+found=0
+while read -r disk tran size model; do
+    [ "$tran" = "usb" ] || continue
+    found=1
+    parts=$(lsblk -nr -o NAME,TYPE "/dev/$disk" 2>/dev/null | awk '$2=="part"' | wc -l)
+    fstypes=$(lsblk -nr -o FSTYPE,TYPE "/dev/$disk" 2>/dev/null | awk '$2=="part"{print $1}' | tr '\n' ' ')
+    [ "$parts" = "0" ] && fstypes=$(lsblk -nro FSTYPE "/dev/$disk" 2>/dev/null | head -1)
+    verdict="would be ADMITTED"
+    if [ "$parts" -gt 1 ]; then
+        verdict="would be REJECTED - $parts partitions"
+    elif ! printf '%s' "$fstypes" | grep -qiE 'vfat|exfat|ntfs'; then
+        verdict="would be REJECTED - filesystem '$(echo $fstypes)' not supported"
+    fi
+    printf '  /dev/%-6s %-8s %-18s %s\n' "$disk" "$size" "${model:-unknown}" "$verdict"
+done < <(lsblk -dn -o NAME,TRAN,SIZE,MODEL 2>/dev/null)
+[ "$found" = 0 ] && note "no USB disks attached right now"
 
 # ------------------------------------------------------------------ verdict
 echo
