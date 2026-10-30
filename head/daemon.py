@@ -261,6 +261,7 @@ class Head:
         except mounts.MountError:
             pass
         self.ready()
+        state.start_heartbeat()
 
         for action, record in devices.monitor():
             if action == "add":
@@ -288,6 +289,7 @@ class Head:
         log.info("simulation mode - no hardware will be touched")
         log.info("state file: %s", state.STATE_PATH)
         log.info("point the UI at it with:  python3 ui/kiosk.py --windowed")
+        state.start_heartbeat()
         demo = [
             (state.READY, 3, {}),
             (state.WORKING, 2, {"phase": "identifying", "model": "SanDisk Ultra", "size": "32 GB"}),

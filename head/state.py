@@ -11,6 +11,7 @@ other noticing, and nothing has to manage a connection.
 import json
 import os
 import tempfile
+import threading
 import time
 
 SYSTEM_STATE_DIR = "/run/cyrberus"
@@ -56,9 +57,44 @@ BLOCKED = "blocked"    # cannot be checked (multi-partition, encrypted, etc.)
 STALE_AFTER_SECONDS = 15
 
 
+# The last state the daemon published, so the heartbeat can re-stamp it.
+_last = {"state": READY, "detail": {}}
+_lock = threading.Lock()
+
+
 def publish(state, path=None, **detail):
     """Atomically replace the state file. Only the daemon calls this."""
+    with _lock:
+        _last["state"] = state
+        _last["detail"] = dict(detail)
+    return _write(state, path, detail)
+
+
+def start_heartbeat(interval=5.0, path=None):
+    """Re-stamp the current state periodically so the UI knows we are alive.
+
+    The daemon publishes only on transitions, and sits idle in the udev loop
+    between devices - sometimes for hours. Without this the UI would decide
+    a healthy, waiting Head was a dead one after STALE_AFTER_SECONDS.
+    """
+    def beat():
+        while True:
+            time.sleep(interval)
+            with _lock:
+                state_name, detail = _last["state"], dict(_last["detail"])
+            try:
+                _write(state_name, path, detail)
+            except OSError:
+                pass        # transient; the next beat will try again
+
+    thread = threading.Thread(target=beat, daemon=True, name="cyrberus-heartbeat")
+    thread.start()
+    return thread
+
+
+def _write(state, path=None, detail=None):
     path = path or STATE_PATH
+    detail = detail or {}
     payload = {
         "state": state,
         "updated_at": time.time(),

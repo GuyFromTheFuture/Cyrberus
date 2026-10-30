@@ -52,9 +52,13 @@ def pick_family(root):
 
 
 class Kiosk:
-    def __init__(self, root, state_path, windowed=False):
+    def __init__(self, root, state_path, windowed=False, explicit_path=False):
         self.root = root
         self.state_path = state_path
+        # When the UI starts before the daemon (at boot, before /run/cyrberus
+        # exists) it resolves to a fallback path the daemon will never use.
+        # Unless the operator named a path, re-resolve while the file is absent.
+        self.explicit_path = explicit_path
         self.family = pick_family(root)
         self.last_signature = None
 
@@ -323,6 +327,10 @@ class Kiosk:
             self.screen_ready(detail)
 
     def poll(self):
+        if not self.explicit_path and not os.path.exists(self.state_path):
+            candidate = state.resolve_state_path(writable=False)
+            if candidate != self.state_path and os.path.exists(candidate):
+                self.state_path = candidate
         self.current = state.read(self.state_path)
         self.redraw()
         self.root.after(POLL_MS, self.poll)
@@ -338,7 +346,8 @@ def main():
 
     print("kiosk watching: %s" % args.state)
     root = tk.Tk()
-    Kiosk(root, args.state, windowed=args.windowed)
+    Kiosk(root, args.state, windowed=args.windowed,
+          explicit_path=(args.state != state.READ_PATH))
     root.mainloop()
 
 

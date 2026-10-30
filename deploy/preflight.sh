@@ -99,6 +99,20 @@ check_dir() {
         return
     fi
     local owner; owner=$(stat -c '%U' "$path")
+    # Files left inside by an earlier run under a different account block
+    # writes even when the directory itself is correct - the log file in
+    # particular. Check the contents, not just the directory.
+    local strays
+    strays=$(find "$path" -mindepth 1 -maxdepth 1 ! -user "$SVC_USER" 2>/dev/null | head -5)
+    if [ -n "$strays" ]; then
+        if [ "$FIX" = 1 ]; then
+            chown -R "$SVC_USER:$SVC_USER" "$path" \
+                && did "re-owned contents of $path to $SVC_USER"
+        else
+            bad "$label $path contains files not owned by $SVC_USER"
+            note "sudo chown -R $SVC_USER:$SVC_USER $path"
+        fi
+    fi
     if [ "$owner" != "$SVC_USER" ]; then
         if [ "$FIX" = 1 ]; then
             chown "$SVC_USER:$SVC_USER" "$path" && chmod "$mode" "$path" \
