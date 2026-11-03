@@ -419,6 +419,20 @@ class Head:
                 time.sleep(hold)
 
 
+def warn_if_status_hidden():
+    """A daemon that cannot write /run/cyrberus writes somewhere private, and
+    a screen run by another account will never see it - the classic cause of
+    "Checking is unavailable" while scans clearly run. Say so loudly."""
+    sysdir = state.SYSTEM_STATE_DIR
+    if (os.path.isdir(sysdir) and os.environ.get("CYRBERUS_STATE") is None
+            and not state.STATE_PATH.startswith(sysdir + os.sep)):
+        import getpass
+        log.warning("cannot write %s as '%s' - status goes to %s instead.",
+                    sysdir, getpass.getuser(), state.STATE_PATH)
+        log.warning("A screen running as another account will show 'Checking is "
+                    "unavailable'. Run the daemon as cyrberus: sudo -u cyrberus ...")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Cyrberus Head scanner daemon")
     ap.add_argument("--simulate", action="store_true",
@@ -438,6 +452,9 @@ def main():
     except OSError as e:
         # The lock is a safety net, not a requirement - carry on without it.
         log.warning("could not take the single-instance lock (%s); continuing", e)
+
+    if not args.simulate:
+        warn_if_status_hidden()
 
     # systemd stops services with SIGTERM. Turn it into a normal exit so the
     # cleanup below runs and a drive is never left mounted.

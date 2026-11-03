@@ -55,19 +55,14 @@ class Kiosk:
     def __init__(self, root, state_path, windowed=False, explicit_path=False):
         self.root = root
         self.state_path = state_path
-<<<<<<< HEAD
-        # When the UI starts before the daemon (at boot, before /run/cyrberus
-        # exists) it resolves to a fallback path the daemon will never use.
-        # Unless the operator named a path, re-resolve while the file is absent.
-=======
         # The UI can start before the daemon (at boot), and a daemon run by
         # hand may write somewhere other than the service does. Unless the
         # operator named a path, poll() re-resolves whenever what it reads is
         # missing or stale, and follows the freshest status file.
->>>>>>> 51a9c44 (Head: status folder readable by the screen; explain unavailable screen)
         self.explicit_path = explicit_path
         self.family = pick_family(root)
         self.last_signature = None
+        self.offline_reason = ""
 
         root.title("Cyrberus Head")
         root.configure(bg=NAVY)
@@ -273,6 +268,9 @@ class Kiosk:
         self.icon_lock(400, 150)
         self.text(400, 268, "Checking is unavailable", 40, AMBER, True)
         self.text(400, 312, "This station is not running right now.", 23, INK)
+        # Small print for whoever is setting the station up: the exact reason.
+        for i, chunk in enumerate(self._wrap(self.offline_reason or "", 74)[:2]):
+            self.text(400, 356 + i * 22, chunk, 14, FAINT)
         self.bottom_bar()
         self.text(400, 449, "Ask your IT staff for help", 21, INK, True)
 
@@ -309,7 +307,8 @@ class Kiosk:
         d = payload.get("detail", {})
         return (payload.get("state"), payload.get("stale"), d.get("phase"),
                 d.get("done"), d.get("reason"), d.get("reference"),
-                d.get("model"), d.get("expires_at"), d.get("signatures_updated"))
+                d.get("model"), d.get("expires_at"), d.get("signatures_updated"),
+                self.offline_reason if payload.get("stale") else "")
 
     def redraw(self, force=False):
         payload = self.current
@@ -336,10 +335,6 @@ class Kiosk:
             self.screen_ready(detail)
 
     def poll(self):
-        if not self.explicit_path and not os.path.exists(self.state_path):
-            candidate = state.resolve_state_path(writable=False)
-            if candidate != self.state_path and os.path.exists(candidate):
-                self.state_path = candidate
         self.current = state.read(self.state_path)
         # Unless the operator named a path, follow the live daemon: if what we
         # are reading is missing or stale, look for a fresher file elsewhere.
@@ -348,6 +343,11 @@ class Kiosk:
             if candidate != self.state_path and os.path.exists(candidate):
                 self.state_path = candidate
                 self.current = state.read(self.state_path)
+        reason = state.explain(self.state_path) if self.current.get("stale") else ""
+        if reason != self.offline_reason:
+            self.offline_reason = reason
+            if reason:
+                print("kiosk: unavailable - %s" % reason, flush=True)
         self.redraw()
         self.root.after(POLL_MS, self.poll)
 

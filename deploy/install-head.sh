@@ -206,8 +206,9 @@ if [ "$KIOSK" = 1 ]; then
         run useradd --create-home --user-group --shell /bin/bash "$KIOSK_USER"
         run usermod --lock "$KIOSK_USER"
     fi
-    # cyrberus: read the state file. video/input/render: drive the display.
-    for g in "$SVC_USER" video input render; do
+    # video/input/render: drive the display. (The status file the screen
+    # reads is world-readable, so no cyrberus group membership is needed.)
+    for g in video input render; do
         group_exists "$g" || continue
         if user_exists "$KIOSK_USER" && in_group "$KIOSK_USER" "$g"; then
             same "$KIOSK_USER in group $g"
@@ -224,9 +225,9 @@ fi
 ADMIN_ADDED=0
 if [ -n "$ADMIN_USER" ]; then
     if in_group "$ADMIN_USER" "$SVC_USER"; then
-        same "$ADMIN_USER in group $SVC_USER (can read state and logs)"
+        same "$ADMIN_USER in group $SVC_USER (can read the logs)"
     else
-        change "add $ADMIN_USER to group $SVC_USER (log out and back in for it to apply)"
+        change "add $ADMIN_USER to group $SVC_USER - read logs without sudo (applies at next login)"
         run usermod -aG "$SVC_USER" "$ADMIN_USER"
         [ "$DRY" = 0 ] && ADMIN_ADDED=1
     fi
@@ -545,6 +546,6 @@ else
 fi
 if [ "$ADMIN_ADDED" = 1 ]; then
     echo
-    echo "You were added to the '$SVC_USER' group. Log out and back in (or reboot)"
-    echo "before running the screen by hand, or it cannot read the state file."
+    echo "You were added to the '$SVC_USER' group, so you can read the logs without"
+    echo "sudo after your next login. (The screen does not need it.)"
 fi

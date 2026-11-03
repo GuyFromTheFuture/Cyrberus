@@ -35,11 +35,11 @@ RestartSec=3
 # The daemon turns SIGTERM into a clean exit that unmounts any drive first.
 TimeoutStopSec=20
 
-# /run/cyrberus holds state.json, which the kiosk reads. 0750 + the kiosk
-# account in the cyrberus group = readable by the screen, writable only here.
+# /run/cyrberus holds state.json, which the screen reads: readable by every
+# account, writable only by this service (nothing in it is sensitive).
 # Preserve: a daemon run by hand after `systemctl stop` can still use it.
 RuntimeDirectory=cyrberus
-RuntimeDirectoryMode=0750
+RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=yes
 # Also re-owns any log file an earlier hand-run left behind.
 LogsDirectory=cyrberus

@@ -132,6 +132,26 @@ check("screen follows the live daemon, not a leftover",
 k3 = Kiosk(tk.Tk(), leftover, windowed=True, explicit_path=True)
 k3.poll()
 check("an explicit --state path is never second-guessed", k3.state_path == leftover)
+# "Checking is unavailable" must say WHY, so a screen/daemon mismatch is
+# visible at a glance (the cause of a real demo failure).
+gone = os.path.join(xdg, "nothing-here.json")
+k4 = Kiosk(tk.Tk(), gone, windowed=True, explicit_path=True)
+k4.poll()
+shown = " ".join(c[2].get("text", "") for c in k4.canvas.calls if c[0] == "text")
+check("unavailable screen names a missing status file",
+      "No status at" in shown and "scanner running" in shown, shown[-60:])
+_real_access = st.os.access
+st.os.access = lambda p, m: False if p == sysdir else _real_access(p, m)
+try:
+    reason = st.explain(gone)
+finally:
+    st.os.access = _real_access
+check("unavailable screen names an unreadable status folder",
+      "cannot open" in reason and sysdir in reason, reason[:60])
+k4.canvas.calls.clear(); k4.poll()
+check("no repaint while the reason stays the same", len(k4.canvas.calls) == 0,
+      "%d calls" % len(k4.canvas.calls))
+
 st.SYSTEM_STATE_DIR = old_sys
 if old_xdg is None:
     os.environ.pop("XDG_RUNTIME_DIR", None)

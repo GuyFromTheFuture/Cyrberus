@@ -146,9 +146,9 @@ signing key, never formats or mounts anything, and never touches a USB drive.
 | # | Step | What it does | Why (security rationale) |
 |---|---|---|---|
 | 1 | Packages | ClamAV, Python venv, `ntfs-3g`, `exfatprogs`, `dosfstools`; for the screen a bare X server, `matchbox` and `python3-tk` — `--no-install-recommends`, ~45 MB | Least functionality (CM-7): no desktop, no file manager, no automounter. `ntfs-3g` parses untrusted NTFS in user space, not the kernel |
-| 2 | Accounts | `cyrberus` (runs the daemon, no login), `kiosk` (shows the screen, no password, no sudo), adds `<admin>` to group `cyrberus` | Privilege separation: the scanner can mount, the screen can only read status |
+| 2 | Accounts | `cyrberus` (runs the daemon, no login), `kiosk` (shows the screen, no password, no sudo), adds `<admin>` to group `cyrberus` (to read logs without sudo) | Privilege separation: the scanner can mount, the screen can only read status |
 | 3 | Python venv | `/opt/cyrberus/venv` with `head/requirements.txt` | Reproducible dependencies; Debian forbids `pip` into system Python |
-| 4 | Directories | `keys/` 700; `/mnt/cyrberus-scan`, `/var/log/cyrberus`, `/run/cyrberus` 750; tmpfiles rule recreates `/run/cyrberus` every boot | Only `cyrberus` writes; group members read |
+| 4 | Directories | `keys/` 700; `/mnt/cyrberus-scan`, `/var/log/cyrberus`, `/run/cyrberus` 755; tmpfiles rule recreates `/run/cyrberus` every boot | Only `cyrberus` writes. Logs: group `cyrberus` reads. Status: anyone reads (nothing sensitive in it) |
 | 5 | **Signing key** | Generates the Ed25519 keypair **once**; exports the *public* key to `/var/lib/cyrberus/head_public.pem` and prints its `key_id` | Root of trust (P5). Public key is what Sentinels need |
 | 6 | Mount privilege | `/etc/sudoers.d/cyrberus`, **syntax-checked by `visudo` before install** | A broken sudoers file locks everyone out of sudo |
 | 7 | **ClamAV** | Merges `deploy/clamd.conf.d/cyrberus.conf` into `clamd.conf` (backup kept as `clamd.conf.pre-cyrberus`), restarts clamd | **P4** fail closed: oversized or encrypted content is flagged, never silently skipped |
@@ -161,8 +161,9 @@ signing key, never formats or mounts anything, and never touches a USB drive.
 Options: `--no-packages` (offline re-run), `--no-kiosk` (scanner only),
 `--boot` (also switch boot-to-standby on).
 
-> If the installer added you to the `cyrberus` group, **log out and back in**
-> (or reboot) before running the screen by hand.
+> If the installer added you to the `cyrberus` group, that takes effect at your
+> next login and only matters for reading logs without `sudo`. The screen does
+> not depend on it.
 
 **Time zone** — the screen shows "Good until 4:47 PM" in local time:
 ```bash
@@ -276,7 +277,7 @@ safeguard working, not a fault.
 
 ```
 power on
- ├─ systemd-tmpfiles ─► /run/cyrberus (0750 cyrberus:cyrberus)
+ ├─ systemd-tmpfiles ─► /run/cyrberus (0755 cyrberus:cyrberus)
  ├─ clamav-daemon ────► loads signatures (~1 min)
  ├─ cyrberus-scanner.service (User=cyrberus)
  │     daemon.py ─► waits for USB; writes /run/cyrberus/state.json every ≤5 s
@@ -417,7 +418,7 @@ Apply with `sudo systemctl restart cyrberus-scanner`.
 | Symptom | Cause → fix |
 |---|---|
 | Daemon prints `ready` and then nothing | **Normal.** It waits for a USB insertion. |
-| Screen: "Checking is unavailable" | Daemon not running or not updating its status. `bash deploy/boot-mode.sh status`. If you run the screen by hand: are you in group `cyrberus` (log out/in after the installer added you)? |
+| Screen: "Checking is unavailable" | The small grey line under the heading says why. *"No status at …"* / *"not being updated"*: the daemon is not running, or is writing somewhere else — its first lines print `state file: …`; start it as `sudo -u cyrberus …` (it warns if it cannot write `/run/cyrberus`). *"cannot open /run/cyrberus"*: re-run `sudo bash deploy/install-head.sh`. Also `bash deploy/boot-mode.sh status` |
 | Screen: "Virus list not ready yet" for more than ~3 min | clamd down or no database: `systemctl status clamav-daemon clamav-freshclam` |
 | "The checking service is not available right now" | clamd not answering — still loading after boot, or stopped (P8) |
 | "Unplug this drive and plug it in again to check it." | The drive was attached before the daemon started. Re-insert it. |
@@ -449,7 +450,7 @@ Apply with `sudo systemctl restart cyrberus-scanner`.
 |---|---|---|---|
 | `<admin>` | you; SSH, git pull, sudo | password/SSH key | `sudo`, `cyrberus` |
 | `cyrberus` | runs the scanner daemon | none (`nologin`) | `cyrberus` |
-| `kiosk` | shows the screen | console autologin only, no password | `cyrberus`, `video`, `input`, `render` |
+| `kiosk` | shows the screen | console autologin only, no password | `video`, `input`, `render` |
 
 ### Files
 
@@ -459,7 +460,7 @@ Apply with `sudo systemctl restart cyrberus-scanner`.
 | `/opt/cyrberus/keys/head_private.pem` | `cyrberus` 600 (dir 700) | signing key (P5) |
 | `/opt/cyrberus/venv/` | `<admin>` | Python environment |
 | `/var/lib/cyrberus/head_public.pem`, `key_id.txt` | root 644 | public key export for Sentinels |
-| `/run/cyrberus/state.json` | `cyrberus` 644 (dir 750) | live status the screen reads |
+| `/run/cyrberus/state.json` | `cyrberus` 644 (dir 755) | live status the screen reads |
 | `/var/log/cyrberus/head.log` | `cyrberus` (dir 750) | daemon log |
 | `/mnt/cyrberus-scan` | `cyrberus` 750 | where drives are mounted for checking |
 | `/run/lock/cyrberus-head.lock` | — | single-instance lock |

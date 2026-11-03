@@ -64,7 +64,7 @@ manifest:
   validity: 12 hours
 admission_rules: USB-attached storage (flash drives and USB hard drives); exactly one partition; FAT32, exFAT or NTFS; not encrypted
 repo_layout_root: /opt/cyrberus on the Pi; GitHub <owner>/<repo>; MIT licence
-tests: 121 checks in 4 suites, all passing (23 manifest, 51 head, 18 ui, 29 root integration) + 16 Sentinel golden vectors
+tests: 124 checks in 4 suites, all passing (23 manifest, 51 head, 21 ui, 29 root integration) + 16 Sentinel golden vectors
 top_open_decisions: [D1 Sentinel delivery model, D3 Windows enforcement scope, D4 Windows writing to drives, D5 Head update path]
 next_milestone: Sentinel spike (weeks 1-2) - prove a SYSTEM service can read a drive users are denied
 ```
@@ -383,7 +383,7 @@ Path resolution: `CYRBERUS_STATE` overrides; writers use the first writable of `
 | Process | Account | Rights |
 |---|---|---|
 | `head/daemon.py` (service `cyrberus-scanner`) | `cyrberus` (no login) | `sudo` for `/usr/bin/mount`, `/usr/bin/umount` only; reads key; writes `/run/cyrberus`, `/var/log/cyrberus` |
-| `ui/kiosk.py` (X session on tty1) | `kiosk` (no password, no sudo) | read `/run/cyrberus` via group `cyrberus` |
+| `ui/kiosk.py` (X session on tty1) | `kiosk` (no password, no sudo) | read `/run/cyrberus` (0755: readable by all, writable only by `cyrberus`) |
 | `clamd` | `clamav` | receives file descriptors from `clamdscan --fdpass` |
 
 Service sandboxing: `ProtectSystem=full`, `ProtectHome=yes`, `PrivateTmp=yes`, `ReadOnlyPaths=/opt/cyrberus`; `NoNewPrivileges=no` (sudo needs setuid). These give the service a private mount namespace — scan mounts are invisible from SSH (`nsenter` to inspect).
@@ -402,7 +402,7 @@ Service sandboxing: `ProtectSystem=full`, `ProtectHome=yes`, `PrivateTmp=yes`, `
 Site settings go in `/etc/default/cyrberus` (read by the service).
 
 ### 8.7 Boot-to-standby chain
-`systemd-tmpfiles` creates `/run/cyrberus` (the unit's `RuntimeDirectory=` also creates it and resets it to 0750 when the service starts) → `clamav-daemon` loads signatures (~1 min) → `cyrberus-scanner.service` (`Restart=always`, `Wants=` clamd so it starts even if clamd is late and refuses drives until it answers) → `getty@tty1` with autologin drop-in logs in `kiosk` → `~kiosk/.bash_profile` runs `startx` on tty1 only (Ctrl+C ignored; on exit sleeps 3 s and ends the session; getty restarts it) → `~kiosk/.xinitrc` runs matchbox + `kiosk.py`. The daemon's idle tick refreshes "Virus list version" once clamd answers. Switch: `deploy/boot-mode.sh on|off|restart|status`.
+`systemd-tmpfiles` creates `/run/cyrberus` (the unit's `RuntimeDirectory=` also creates it and resets it to 0755 when the service starts) → `clamav-daemon` loads signatures (~1 min) → `cyrberus-scanner.service` (`Restart=always`, `Wants=` clamd so it starts even if clamd is late and refuses drives until it answers) → `getty@tty1` with autologin drop-in logs in `kiosk` → `~kiosk/.bash_profile` runs `startx` on tty1 only (Ctrl+C ignored; on exit sleeps 3 s and ends the session; getty restarts it) → `~kiosk/.xinitrc` runs matchbox + `kiosk.py`. The daemon's idle tick refreshes "Virus list version" once clamd answers. Switch: `deploy/boot-mode.sh on|off|restart|status`.
 
 ### 8.8 Edge cases
 | Situation | Behaviour |
@@ -436,7 +436,7 @@ Site settings go in `/etc/default/cyrberus` (read by the service).
 |---|---|---|
 | `test_manifest.py` | 23 | sign/verify round trip; added/modified/deleted file, expiry (including *exactly* at expiry), edited manifest, unknown Head, corrupt or wrong-length signature, no manifest all deny; empty drive valid; case-insensitive paths pass, case-twins deny, and folding is simple uppercase (ß ≠ SS); symlinked directories reported; step 9 before step 10; a broken trusted key denies instead of crashing; lab tool keygen/sign/verify, complete lab manifests, owner-only lab key, and refusal of the real key; CLI works from any directory |
 | `test_head.py` | 51 | admission rules, verdict parsing and classification (including clamdscan exit 2), the daemon's verdict order, mount option sets, state file (round trip, stale, missing, corrupt, permissions), heartbeat, single-instance lock, present-at-boot handling, idle refresh, in-use disks |
-| `test_ui.py` | 18 | every screen renders, repaint rules, wrapping, expiry formatting, status-file following |
+| `test_ui.py` | 21 | every screen renders, repaint rules, wrapping, expiry formatting, status-file following, the unavailable screen explaining its cause |
 | `test_root_integration.py` (root) | 29 | **kernel-enforced** ro/noexec/nosuid/nodev; full pipeline on a real filesystem image; Sentinel verifier accepts, then rejects after tampering; infected/limited/multi-partition refused with no manifest; Unicode names; mounted block devices detected as in use. Uses FAT32 on the Pi; where FAT is unavailable (no `mkfs.vfat` or kernel driver, e.g. a container) it says so and falls back to ext4 with admission patched — the last line shows which: `(vfat)` or `(ext4)` |
 | `make_sentinel_fixtures.py` | 16 cases | golden vectors for the Sentinel (§10.10); `run_all.sh` regenerates them in a temporary folder and checks them against the reference verifier |
 
@@ -748,6 +748,7 @@ Zero-day or unknown malware (signature detection is probabilistic); HID/BadUSB d
 | USB-booted Pi would treat its own SSD as a drive | Boot disk is also `ID_BUS=usb` | System-disk detection by device number |
 | Non-ASCII filenames at risk on FAT | Kernel-default FAT charset | Explicit `utf8,shortname=mixed` |
 | Screen could read a stale file while a hand-run daemon wrote elsewhere | Reader/writer path mismatch after group permissions changed | Readers follow the freshest status file |
+| *Live demo, 2 Nov:* scans ran over SSH but the Pi's screen stayed on "Checking is unavailable" | `/run/cyrberus` was 0750 + group `cyrberus`; the console login predated the installer adding the user to the group, so the screen could not see the status | Status folder made world-readable (0755, nothing sensitive in it); the unavailable screen now prints the exact reason; the daemon warns when it cannot write the shared folder |
 | *Found by an independent cold-read review of this handoff:* | | |
 | Reference verifier compared paths exactly; the spec says case-insensitively | Linux habits | Case-folded comparison, case-twins deny; new fixture |
 | Verifier checked step 10 before step 9 and hashed before comparing file sets | Convenience walk | Normative order; hashing only in step 11 |

@@ -42,9 +42,9 @@ def resolve_state_path(writable):
     if writable:
         return candidates[0]
 
-    # A reader may be able to see a location its writer cannot use - an admin
-    # in group cyrberus can read /run/cyrberus but a daemon it starts by hand
-    # (--simulate) cannot write there - and a stopped service leaves its last
+    # A reader may be able to see a location its writer cannot use - anyone
+    # can read /run/cyrberus, but a daemon an admin starts by hand (e.g.
+    # --simulate) cannot write there - and a stopped service leaves its last
     # file behind. So read whichever existing file was written most recently.
     newest, newest_mtime = None, -1.0
     for path in candidates:
@@ -86,15 +86,12 @@ def publish(state, path=None, **detail):
     return _write(state, path, detail)
 
 
-<<<<<<< HEAD
-=======
 def current():
     """The state this process last published."""
     with _lock:
         return _last["state"]
 
 
->>>>>>> 51a9c44 (Head: status folder readable by the screen; explain unavailable screen)
 def start_heartbeat(interval=5.0, path=None):
     """Re-stamp the current state periodically so the UI knows we are alive.
 
@@ -142,6 +139,22 @@ def _write(state, path=None, detail=None):
             pass
         raise
     return payload
+
+
+def explain(path):
+    """One line saying why the status at `path` is not usable.
+
+    Shown small on the screen's "Checking is unavailable" page and printed to
+    its log, so a mismatch between the screen and the daemon is visible at a
+    glance instead of looking like a dead scanner. Deliberately free of
+    changing numbers, so the screen does not repaint every second.
+    """
+    if os.path.isdir(SYSTEM_STATE_DIR) and not os.access(SYSTEM_STATE_DIR, os.R_OK | os.X_OK):
+        return ("This account cannot open %s - re-run the installer "
+                "(it makes the folder readable)." % SYSTEM_STATE_DIR)
+    if not os.path.exists(path):
+        return "No status at %s - is the scanner running?" % path
+    return "Status at %s is not being updated - is the scanner running?" % path
 
 
 def read(path=None):

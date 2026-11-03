@@ -56,12 +56,7 @@ fi
 KIOSK_EXISTS=0
 if id "$KIOSK_USER" >/dev/null 2>&1; then
     KIOSK_EXISTS=1
-    if id -nG "$KIOSK_USER" | tr ' ' '\n' | grep -qx "$SVC_USER"; then
-        ok "screen account '$KIOSK_USER' is in group $SVC_USER (can read the state file)"
-    else
-        bad "screen account '$KIOSK_USER' is not in group $SVC_USER - the screen will say 'unavailable'"
-        note "sudo usermod -aG $SVC_USER $KIOSK_USER   (then reboot)"
-    fi
+    ok "screen account '$KIOSK_USER' exists"
     if id -nG "$KIOSK_USER" | tr ' ' '\n' | grep -qx sudo; then
         bad "'$KIOSK_USER' is in the sudo group - the screen account must have no admin rights"
         note "sudo deluser $KIOSK_USER sudo"
@@ -72,10 +67,9 @@ fi
 ME="${SUDO_USER:-$(id -un)}"
 if [ "$ME" != root ] && [ "$ME" != "$SVC_USER" ]; then
     if id -nG "$ME" 2>/dev/null | tr ' ' '\n' | grep -qx "$SVC_USER"; then
-        ok "you ($ME) are in group $SVC_USER (can read state and logs)"
+        ok "you ($ME) are in group $SVC_USER (can read the logs without sudo)"
     else
-        warn "you ($ME) are not in group $SVC_USER - a screen you start by hand cannot read the state"
-        note "sudo usermod -aG $SVC_USER $ME   (then log out and back in)"
+        note "you ($ME) are not in group $SVC_USER - read logs with sudo, or: sudo usermod -aG $SVC_USER $ME"
     fi
 fi
 
@@ -139,13 +133,9 @@ check_dir() {
         fi
         return
     fi
-<<<<<<< HEAD
-    local owner; owner=$(stat -c '%U' "$path")
-=======
     local owner cur
     owner=$(stat -c '%U' "$path")
     cur=$(stat -c '%a' "$path")
->>>>>>> 51a9c44 (Head: status folder readable by the screen; explain unavailable screen)
     # Files left inside by an earlier run under a different account block
     # writes even when the directory itself is correct - the log file in
     # particular. Check the contents, not just the directory.
@@ -153,12 +143,7 @@ check_dir() {
     strays=$(find "$path" -mindepth 1 -maxdepth 1 ! -user "$SVC_USER" 2>/dev/null | head -5)
     if [ -n "$strays" ]; then
         if [ "$FIX" = 1 ]; then
-<<<<<<< HEAD
-            chown -R "$SVC_USER:$SVC_USER" "$path" \
-                && did "re-owned contents of $path to $SVC_USER"
-=======
             chown -R "$SVC_USER:$SVC_USER" "$path" && did "re-owned contents of $path to $SVC_USER"
->>>>>>> 51a9c44 (Head: status folder readable by the screen; explain unavailable screen)
         else
             bad "$label $path contains files not owned by $SVC_USER"
             note "sudo chown -R $SVC_USER:$SVC_USER $path"
@@ -184,7 +169,7 @@ check_dir() {
     fi
 }
 check_dir "$MOUNTPOINT" 0750 "scan mountpoint"
-check_dir "$RUN_DIR"    0750 "runtime dir"
+check_dir "$RUN_DIR"    0755 "runtime dir"
 check_dir "$LOG_DIR"    0750 "log dir"
 if [ -f /etc/tmpfiles.d/cyrberus.conf ]; then
     ok "tmpfiles rule installed (recreates $RUN_DIR at every boot)"
