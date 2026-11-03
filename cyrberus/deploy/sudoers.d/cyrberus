@@ -1,0 +1,7 @@
+# Install with:  sudo EDITOR=nano visudo -f /etc/sudoers.d/cyrberus
+# visudo validates syntax before saving; editing this file directly with an
+# editor can disable sudo for every account on the machine.
+#
+# The daemon runs unprivileged. These two commands are the only operations
+# it cannot perform as itself.
+cyrberus ALL=(root) NOPASSWD: /usr/bin/mount, /usr/bin/umount

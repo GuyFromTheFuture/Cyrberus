@@ -1,8 +1,9 @@
 """Mounting untrusted media.
 
-Every mount is read-only and stripped of the ability to execute, escalate or
-expose devices. The daemon remounts read-write for exactly as long as it takes
-to write the manifest, then drops straight back.
+Every scan mount is read-only and stripped of the ability to execute, escalate
+or expose devices. To write the manifest the daemon unmounts, mounts fresh
+read-write (noexec/nosuid/nodev still applied) for exactly as long as the write
+takes, then unmounts again. It never remounts in place - see mount_rw().
 
 Mount options, and why each is there:
   ro        the Head never modifies evidence, and nothing can change mid-scan
@@ -32,6 +33,14 @@ def _opts_for(fstype, uid, gid, writable=False):
     # mount time or the unprivileged daemon cannot read the files.
     if fstype in ("vfat", "fat", "fat32", "exfat", "ntfs", "ntfs3"):
         opts += ["uid=%d" % uid, "gid=%d" % gid, "umask=0077"]
+    # FAT stores long names as UTF-16. How Linux shows them otherwise depends
+    # on a kernel build default (often ASCII or Latin-1), and a mangled name
+    # in the manifest would make every Sentinel deny the drive. utf8 is the
+    # option the kernel's vfat documentation recommends; shortname=mixed shows
+    # 8.3 names as stored, the way Windows shows them. exFAT already defaults
+    # to UTF-8 and rejects the utf8 flag, so it is left alone.
+    if fstype in ("vfat", "fat", "fat32"):
+        opts += ["utf8", "shortname=mixed"]
     return ",".join(opts)
 
 

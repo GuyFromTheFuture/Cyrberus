@@ -8,7 +8,7 @@ Admission policy (MANIFEST_FORMAT.md s6):
   - filesystem is FAT32, exFAT or NTFS
   - the device is USB-attached removable storage, not an internal disk
 """
-import subprocess
+import os
 
 SUPPORTED_FS = {"vfat", "fat", "fat32", "exfat", "ntfs", "ntfs3"}
 
@@ -19,6 +19,12 @@ R_NO_PARTITION = "This drive has no readable section on it."
 R_UNSUPPORTED_FS = "This drive uses a format we cannot read."
 R_ENCRYPTED = "This drive is locked with a password."
 R_NOT_REMOVABLE = "That device is not a removable drive."
+# Shown when the daemon starts with a drive already attached (boot, restart).
+# It is never processed silently: the operator re-inserts it on purpose.
+R_PRESENT_AT_START = "Unplug this drive and plug it in again to check it."
+# A disk the system itself is using - the boot SSD of a USB-booted Pi, say.
+# The daemon ignores these silently; admit() refuses them as a second guard.
+R_IN_USE = "That drive is in use by this station."
 
 
 def admit(record):
@@ -26,6 +32,8 @@ def admit(record):
 
     record: dict from describe(). Returns (ok: bool, reason: str|None).
     """
+    if record.get("in_use"):
+        return False, R_IN_USE
     if not record.get("is_usb") or not record.get("is_removable"):
         return False, R_NOT_REMOVABLE
 
@@ -68,6 +76,52 @@ def device_block(record):
 # --------------------------------------------------------------------------
 # udev adapter. Everything below talks to hardware and is not unit-tested.
 # --------------------------------------------------------------------------
+
+def _in_use_devnums():
+    """Device numbers of every block device the system is using right now:
+    mounted anywhere (as this process sees it) or active as swap.
+
+    Uses the major:minor field of /proc/self/mountinfo rather than device
+    names - on a Pi the root filesystem shows up as "/dev/root", which no
+    name comparison would match - and never stats a mountpoint, so a dead
+    mount cannot hang the daemon.
+    """
+    nums = set()
+    try:
+        with open("/proc/self/mountinfo") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) > 2 and ":" in parts[2]:
+                    major, minor = parts[2].split(":", 1)
+                    nums.add(os.makedev(int(major), int(minor)))
+    except (OSError, ValueError):
+        pass
+    try:
+        with open("/proc/swaps") as f:
+            next(f, None)
+            for line in f:
+                src = line.split()[0] if line.strip() else ""
+                if src.startswith("/dev/"):
+                    try:
+                        nums.add(os.stat(src).st_rdev)
+                    except OSError:
+                        pass
+    except OSError:
+        pass
+    return nums
+
+
+def in_use(nodes):
+    """True if any of these device nodes is mounted or swapping."""
+    busy = _in_use_devnums()
+    for node in nodes:
+        try:
+            if node and os.stat(node).st_rdev in busy:
+                return True
+        except OSError:
+            pass
+    return False
+
 
 def _int_attr(dev, name, default=0):
     try:
@@ -116,6 +170,7 @@ def describe(dev):
         "vendor": (dev.get("ID_VENDOR") or "").replace("_", " ").strip(),
         "size_bytes": _int_attr(dev, "size") * 512,
         "partitions": parts,
+        "in_use": in_use([dev.device_node] + [p["node"] for p in parts]),
     }
 
 
@@ -127,25 +182,36 @@ def describe_by_node(node):
     return describe(dev)
 
 
-def monitor():
+def monitor(idle_every=None):
     """Yield ('add'|'remove', record) as whole USB disks appear and vanish.
 
     Partition events are deliberately ignored: the unit of validation is the
     device, and a partitioned disk emits one event per partition.
+
+    With idle_every (seconds), also yields ('idle', None) whenever that long
+    passes with no event, so the caller can do housekeeping without a thread.
+    Events that arrive while the caller is busy are queued by the kernel and
+    delivered afterwards, in order.
     """
     import pyudev
+    import time
     ctx = pyudev.Context()
     mon = pyudev.Monitor.from_netlink(ctx)
     mon.filter_by("block")
+    mon.start()
 
-    for action, dev in iter(mon):
+    while True:
+        dev = mon.poll(timeout=idle_every)
+        if dev is None:
+            yield "idle", None
+            continue
+        action = dev.action
         if dev.get("DEVTYPE") != "disk":
             continue
         if dev.get("ID_BUS") != "usb":
             continue
         if action == "add":
             # udev announces the disk before its partitions are enumerated.
-            import time
             time.sleep(1.2)
             try:
                 dev = pyudev.Devices.from_device_file(ctx, dev.device_node)
@@ -157,13 +223,16 @@ def monitor():
 
 
 def current_usb_disks():
-    """Every USB disk attached right now. Used at startup."""
+    """Every USB disk attached right now. Used at startup to spot a drive
+    that was plugged in before the daemon was listening."""
     import pyudev
     ctx = pyudev.Context()
     out = []
     for dev in ctx.list_devices(subsystem="block", DEVTYPE="disk"):
         if dev.get("ID_BUS") == "usb":
-            out.append(describe(dev))
+            rec = describe(dev)
+            if not rec["in_use"]:          # never the Pi's own boot disk
+                out.append(rec)
     return out
 
 

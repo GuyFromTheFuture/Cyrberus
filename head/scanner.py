@@ -17,6 +17,21 @@ EXIT_CLEAN = 0
 EXIT_FOUND = 1
 EXIT_ERROR = 2
 
+# ClamAV reports two different things as "FOUND":
+#   - real detections (malware signatures and heuristics), and
+#   - inspection limits: files too large / too deep to scan (AlertExceedsMax,
+#     Heuristics.Limits.Exceeded.*, ClamAV 0.103.4+) and encrypted content it
+#     cannot open (AlertEncrypted*, Heuristics.Encrypted.*).
+# Both must deny the drive - fail closed - but the second kind is not evidence
+# of harm, so the operator screen must say "could not be checked", not
+# "something harmful was found".
+INSPECTION_LIMIT_PREFIXES = ("Heuristics.Limits.Exceeded", "Heuristics.Encrypted")
+
+
+def is_inspection_limit(signature):
+    return signature.startswith(INSPECTION_LIMIT_PREFIXES)
+
+
 _FOUND = re.compile(r"^(?P<path>.+?):\s+(?P<sig>\S+)\s+FOUND\s*$")
 _ERROR = re.compile(r"^(?P<path>.+?):\s+(?P<msg>.+?)\s+ERROR\s*$")
 
@@ -28,6 +43,16 @@ class ScanResult:
         self.errors = errors or []             # [(path, message)]
         self.raw = raw
         self.engine_error = engine_error       # scanner itself failed
+
+    @property
+    def malware(self):
+        """Detections that indicate known or suspected malicious content."""
+        return [d for d in self.detections if not is_inspection_limit(d[1])]
+
+    @property
+    def limited(self):
+        """Files ClamAV refused to inspect fully (too large, encrypted)."""
+        return [d for d in self.detections if is_inspection_limit(d[1])]
 
     @property
     def usable(self):
@@ -65,6 +90,13 @@ def parse_output(stdout, returncode):
     if returncode == EXIT_CLEAN:
         return ScanResult(True, detections, errors, stdout)
     if returncode == EXIT_FOUND:
+        return ScanResult(False, detections, errors, stdout)
+    # Exit 2 ("an error occurred") is also what clamdscan returns when the
+    # engine ran but some files could not be opened - possibly alongside real
+    # detections. Findings that were reported must not be hidden behind a
+    # generic "service unavailable": keep them. Only when nothing at all was
+    # reported is this treated as the engine itself failing.
+    if detections or errors:
         return ScanResult(False, detections, errors, stdout)
     return ScanResult(False, detections, errors, stdout,
                       engine_error="clamdscan exited with status %d" % returncode)

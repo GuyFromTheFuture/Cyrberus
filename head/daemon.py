@@ -13,6 +13,7 @@ import argparse
 import logging
 import os
 import random
+import signal
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -47,7 +48,51 @@ def _default_log_path():
 
 LOG_PATH = os.environ.get("CYRBERUS_LOG") or _default_log_path()
 
+# While idle, how often to re-check the virus-list version. After a boot clamd
+# needs a minute or more to load signatures; this is how the operator screen
+# moves from "not ready yet" to a version number without a drive cycle.
+IDLE_SECONDS = 15
+
+
+def _default_lock_path():
+    if os.path.isdir("/run/lock"):
+        return "/run/lock/cyrberus-head.lock"
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "cyrberus-head.lock")
+
+
+LOCK_PATH = os.environ.get("CYRBERUS_LOCK") or _default_lock_path()
+
 log = logging.getLogger("cyrberus.head")
+
+
+class AlreadyRunning(Exception):
+    pass
+
+
+def single_instance(path=None):
+    """Hold an exclusive lock for this process's lifetime.
+
+    Two Head daemons would both receive every udev event, race to mount the
+    same drive on the same mountpoint, and overwrite each other's state. The
+    usual way that happens: the boot service is running and someone starts a
+    second copy by hand over SSH. Returns the open descriptor (keep it alive);
+    raises AlreadyRunning if another daemon holds the lock.
+    """
+    import fcntl
+    path = path or LOCK_PATH
+    try:
+        # Open without O_CREAT first: with fs.protected_regular, O_CREAT on a
+        # file another account created in sticky /run/lock is refused.
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        fd = os.open(path, os.O_RDONLY | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise AlreadyRunning(path)
+    return fd
 
 
 def setup_logging(verbose=False):
@@ -78,11 +123,24 @@ class Head:
     def __init__(self, simulate=False):
         self.simulate = simulate
         self.busy = False
+        self.sig_version = None
 
     # -- state publishing -------------------------------------------------
     def ready(self):
-        state.publish(state.READY, signatures_updated=self._sig_date())
-        log.info("ready")
+        self.sig_version = self._sig_date()
+        state.publish(state.READY, signatures_updated=self.sig_version)
+        log.info("ready (virus list %s)", self.sig_version or "not loaded yet")
+
+    def idle(self):
+        """Housekeeping between devices. Only touches the screen when it is
+        showing READY, so a result screen is never overwritten."""
+        if state.current() != state.READY:
+            return
+        version = self._sig_date()
+        if version != self.sig_version:
+            self.sig_version = version
+            state.publish(state.READY, signatures_updated=version)
+            log.info("virus list now %s", version or "unavailable")
 
     def working(self, phase, **kw):
         state.publish(state.WORKING, phase=phase, **kw)
@@ -147,22 +205,41 @@ class Head:
         scan_seconds = round(time.time() - t0, 1)
         log.info("scan finished in %ss: %r", scan_seconds, result)
 
+        # Order matters: a real detection is reported as a threat even if the
+        # scan also hit errors - the operator must see the red screen and IT
+        # must get the DETECTION log line.
+        if result.malware:
+            self.threat(reference_code(), result.malware, model=label)
+            return
+
         if result.engine_error:
             log.error("scanner unavailable: %s", result.engine_error)
             self.blocked("The checking service is not available right now.",
                          model=label)
             return
 
-        if not result.clean:
-            self.threat(reference_code(), result.detections, model=label)
+        if result.limited:
+            # Too large, too deeply nested, or encrypted: ClamAV could not see
+            # inside. Fail closed, but do not tell the user it is malware.
+            for path, sig in result.limited[:10]:
+                log.warning("not fully inspected: %s (%s)", path, sig)
+            self.blocked("Some files on this drive are too large or locked "
+                         "to be checked.", model=label)
             return
 
-        if not result.usable:
+        if result.errors:
             # Files the engine could not inspect are not evidence of safety.
             for path, msg in result.errors[:10]:
                 log.warning("unscannable: %s (%s)", path, msg)
             self.blocked("Some files on this drive could not be checked.",
                          model=label)
+            return
+
+        if not result.clean:
+            # Exit status said "found" but nothing was parsed. Unknown is not
+            # safe: fail closed.
+            log.error("scanner reported a finding that could not be parsed")
+            self.blocked("This drive could not be checked.", model=label)
             return
 
         # Clean. Hash everything for the manifest, reporting progress.
@@ -263,8 +340,29 @@ class Head:
         self.ready()
         state.start_heartbeat()
 
-        for action, record in devices.monitor():
-            if action == "add":
+        # A drive attached before we were listening (plugged in during boot,
+        # or mid-scan when the service restarted) produced its udev event
+        # already. Never pick it up silently - ask for a deliberate re-insert.
+        try:
+            present = devices.current_usb_disks()
+        except Exception as e:
+            log.warning("could not list attached drives: %s", e)
+            present = []
+        if present:
+            log.info("drive already attached at startup: %s",
+                     ", ".join(r.get("node") or "?" for r in present))
+            self.blocked(devices.R_PRESENT_AT_START,
+                         model=present[0].get("model") or "")
+
+        for action, record in devices.monitor(idle_every=IDLE_SECONDS):
+            if action == "idle":
+                self.idle()
+            elif action == "add":
+                if record.get("in_use"):
+                    # The system's own disk (USB-booted Pi), re-announced by
+                    # e.g. `udevadm trigger`. Not a drive to check.
+                    log.info("ignoring %s: in use by this system", record.get("node"))
+                    continue
                 if self.busy:
                     log.warning("device attached while busy; ignoring")
                     continue
@@ -329,6 +427,22 @@ def main():
     args = ap.parse_args()
 
     setup_logging(args.verbose)
+
+    try:
+        lock = single_instance()        # noqa: F841 - held until exit
+    except AlreadyRunning:
+        log.error("another Head daemon is already running (lock %s).", LOCK_PATH)
+        log.error("If the boot service is on, stop it first:  "
+                  "sudo systemctl stop cyrberus-scanner")
+        sys.exit(1)
+    except OSError as e:
+        # The lock is a safety net, not a requirement - carry on without it.
+        log.warning("could not take the single-instance lock (%s); continuing", e)
+
+    # systemd stops services with SIGTERM. Turn it into a normal exit so the
+    # cleanup below runs and a drive is never left mounted.
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+
     head = Head(simulate=args.simulate)
     try:
         if args.simulate:
@@ -336,11 +450,14 @@ def main():
         else:
             head.run()
     except KeyboardInterrupt:
+        pass
+    finally:
         log.info("stopping")
-        try:
-            mounts.unmount(MOUNTPOINT)
-        except mounts.MountError:
-            pass
+        if not args.simulate:
+            try:
+                mounts.unmount(MOUNTPOINT)
+            except mounts.MountError:
+                pass
 
 
 if __name__ == "__main__":

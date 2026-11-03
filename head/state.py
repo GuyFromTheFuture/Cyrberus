@@ -31,14 +31,30 @@ def resolve_state_path(writable):
         return override
 
     probe = os.W_OK if writable else os.R_OK
+    candidates = []
     if os.path.isdir(SYSTEM_STATE_DIR) and os.access(SYSTEM_STATE_DIR, probe):
-        return os.path.join(SYSTEM_STATE_DIR, "state.json")
-
+        candidates.append(os.path.join(SYSTEM_STATE_DIR, "state.json"))
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if runtime and os.path.isdir(runtime):
-        return os.path.join(runtime, "cyrberus", "state.json")
+        candidates.append(os.path.join(runtime, "cyrberus", "state.json"))
+    candidates.append(os.path.join(tempfile.gettempdir(), "cyrberus-state.json"))
 
-    return os.path.join(tempfile.gettempdir(), "cyrberus-state.json")
+    if writable:
+        return candidates[0]
+
+    # A reader may be able to see a location its writer cannot use - an admin
+    # in group cyrberus can read /run/cyrberus but a daemon it starts by hand
+    # (--simulate) cannot write there - and a stopped service leaves its last
+    # file behind. So read whichever existing file was written most recently.
+    newest, newest_mtime = None, -1.0
+    for path in candidates:
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            continue
+        if mtime > newest_mtime:
+            newest, newest_mtime = path, mtime
+    return newest or candidates[0]
 
 
 # Resolved per process: the daemon writes, the UI reads.
@@ -70,6 +86,15 @@ def publish(state, path=None, **detail):
     return _write(state, path, detail)
 
 
+<<<<<<< HEAD
+=======
+def current():
+    """The state this process last published."""
+    with _lock:
+        return _last["state"]
+
+
+>>>>>>> 51a9c44 (Head: status folder readable by the screen; explain unavailable screen)
 def start_heartbeat(interval=5.0, path=None):
     """Re-stamp the current state periodically so the UI knows we are alive.
 

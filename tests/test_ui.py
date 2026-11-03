@@ -90,6 +90,54 @@ k.redraw()
 check("repaints as progress advances", len(k.canvas.calls) > 3,
       "%d calls" % len(k.canvas.calls))
 
+st.publish(st.READY, signatures_updated="")
+k.current = st.read()
+k.redraw(force=True)
+st.publish(st.READY, signatures_updated="27801")
+k.current = st.read()
+k.canvas.calls.clear()
+k.redraw()
+shown = " ".join(c[2].get("text", "") for c in k.canvas.calls if c[0] == "text")
+check("repaints when the virus list finishes loading", "27801" in shown, shown[-30:])
+
+st.publish(st.BLOCKED, reason="Unplug this drive and plug it in again to check it.")
+k.current = st.read()
+k.canvas.calls.clear()
+k.redraw()
+shown = [c[2].get("text", "") for c in k.canvas.calls if c[0] == "text"]
+check("re-insert request fits on two lines",
+      any("Unplug this drive" in s for s in shown) and
+      any("check it." in s for s in shown), " / ".join(shown[1:3]))
+
+# An admin in group cyrberus can READ /run/cyrberus, but a daemon they start
+# by hand (--simulate) cannot WRITE there and falls back to their runtime dir;
+# a stopped service leaves its last state.json behind. The screen must follow
+# the live daemon, not the leftover.
+sysdir, xdg = tempfile.mkdtemp(dir=WORK), tempfile.mkdtemp(dir=WORK)
+old_sys, old_xdg = st.SYSTEM_STATE_DIR, os.environ.get("XDG_RUNTIME_DIR")
+st.SYSTEM_STATE_DIR = sysdir
+os.environ["XDG_RUNTIME_DIR"] = xdg
+leftover = os.path.join(sysdir, "state.json")
+st._write(st.READY, leftover, {})
+raw = json.load(open(leftover)); raw["updated_at"] = time.time() - 600
+open(leftover, "w").write(json.dumps(raw)); os.utime(leftover, (time.time() - 600,) * 2)
+live = os.path.join(xdg, "cyrberus", "state.json")
+st._write(st.WORKING, live, {"phase": "scanning"})
+check("reader picks the freshest status file", st.resolve_state_path(False) == live)
+k2 = Kiosk(tk.Tk(), leftover, windowed=True)      # started while only the leftover existed
+k2.poll()
+check("screen follows the live daemon, not a leftover",
+      k2.state_path == live and k2.current["state"] == st.WORKING,
+      os.path.relpath(k2.state_path, WORK))
+k3 = Kiosk(tk.Tk(), leftover, windowed=True, explicit_path=True)
+k3.poll()
+check("an explicit --state path is never second-guessed", k3.state_path == leftover)
+st.SYSTEM_STATE_DIR = old_sys
+if old_xdg is None:
+    os.environ.pop("XDG_RUNTIME_DIR", None)
+else:
+    os.environ["XDG_RUNTIME_DIR"] = old_xdg
+
 check("expiry shown as a clock time",
       ":" in Kiosk._friendly_expiry({"expires_at": "2026-10-29T21:47:00Z"}),
       Kiosk._friendly_expiry({"expires_at": "2026-10-29T21:47:00Z"}))
